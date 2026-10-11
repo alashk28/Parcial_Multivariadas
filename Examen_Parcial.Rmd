@@ -1,0 +1,1419 @@
+---
+title: "Examen Parcial"
+author: "GRUPO 3"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: readable
+    highlight: tango
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup_global, include=FALSE}
+# Solo se muestran las salidas (el código no aparece en el HTML)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center")
+options(width = 110)
+```
+
+# Pregunta 1 - MANOVA con Experimentos Factoriales en DBCA: caso de quinua
+
+```{r p1_fig, include=FALSE}
+knitr::opts_chunk$set(fig.width = 7, fig.height = 5)
+```
+
+```{r p1_opciones, include=FALSE}
+# Funciones auxiliares para dar formato a los valores citados en el texto
+f2   <- function(x) sprintf("%.2f", x)
+f3   <- function(x) sprintf("%.3f", x)
+ptxt <- function(p) ifelse(p < 0.001, "p < 0.001", paste0("p = ", sprintf("%.3f", p)))
+```
+
+
+## Introducción y diseño experimental
+
+En la investigación agronómica rara vez interesa una sola característica de la planta. Una variedad de quinua se evalúa por su **rendimiento** de grano, pero también por su **altura de planta** y por la **calidad nutricional** del grano, por ejemplo su contenido de **proteína**. Estas respuestas se miden sobre la misma parcela, comparten suelo, clima y manejo, y por eso **no son independientes**: suelen estar correlacionadas.
+
+Analizar cada variable mediante un ANOVA por separado tiene una limitación: no considera la correlación entre las respuestas. En cambio, el **MANOVA** permite contrastar diferencias en el **vector de medias** utilizando conjuntamente la información de las variables respuesta.
+
+El **arreglo factorial** permite estudiar dos factores a la vez y, sobre todo, su **interacción**: la respuesta al nitrógeno no tiene por qué ser igual en todas las variedades. Si la interacción es significativa, el "efecto de la dosis" depende de la variedad y el análisis debe continuar con **efectos simples**. Por último, el **DBCA** agrupa parcelas parecidas en bloques, cada uno con todos los tratamientos, para separar la variabilidad del terreno del error experimental.
+
+**Objetivo.** Evaluar el efecto de la variedad, la dosis de nitrógeno y su interacción sobre el vector (Rendimiento, Altura, Proteína) en un DBCA, e identificar qué respuestas contribuyen a los efectos encontrados.
+
+**Diseño.** Se plantea un experimento hipotético con dos variedades de quinua (Salcedo y Pasankalla), dos dosis de nitrógeno (N60 y N120 kg N/ha) y 10 bloques. Cada bloque contiene los 4 tratamientos (una parcela por tratamiento), teniendo N=40 unidades experimentales.
+
+```{r p1_tab-factores}
+tab_factores <- data.frame(
+  Elemento = c("Factor A", "Factor B", "Bloque", "Respuesta 1", "Respuesta 2", "Respuesta 3"),
+  Descripcion = c("Variedad", "Dosis de nitrógeno", "Bloque de campo",
+                  "Rendimiento", "Altura de planta", "Contenido de proteína"),
+  Niveles_Unidad = c("Salcedo, Pasankalla", "N60, N120 (kg N/ha)", "B1 a B10 (10 bloques)",
+                     "t/ha", "cm", "%")
+)
+knitr::kable(tab_factores, col.names = c("Elemento", "Descripción", "Niveles / Unidad"),
+             caption = "Factores, bloque y variables respuesta del experimento.")
+```
+
+El modelo para el vector de respuestas $\mathbf{y}_{ijk}$ de la variedad $i$, la dosis $j$ y el bloque $k$ es:
+
+$$\mathbf{y}_{ijk} = \boldsymbol{\mu} + \boldsymbol{\alpha}_i + \boldsymbol{\beta}_j + (\boldsymbol{\alpha\beta})_{ij} + \boldsymbol{\rho}_k + \boldsymbol{\varepsilon}_{ijk}, \qquad \boldsymbol{\varepsilon}_{ijk} \sim N_3(\mathbf{0}, \boldsymbol{\Sigma})$$
+
+El bloque se trata como efecto **fijo**, que es la práctica habitual en el DBCA clásico.
+
+**Nota sobre los datos.** Los datos son **simulados con fines académicos** (`set.seed(18)` y `mvrnorm`). Los órdenes de magnitud son razonables para quinua, pero no provienen de un ensayo real. Por eso los resultados describen los datos simulados y las conclusiones agronómicas ilustran el método.
+
+## Datos y exploración inicial
+
+### Simulación de los datos
+
+Se generan las medias de cada tratamiento, un efecto de bloque aleatorio centrado en cero y un error multivariado con correlaciones moderadas. Se diseñó que Salcedo responda al aumento de nitrógeno en rendimiento y altura, y que Pasankalla responda poco, para que exista interacción.
+
+```{r p1_librerias, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(mvnormtest)   # mshapiro.test: normalidad multivariada
+library(heplots)      # boxM: homogeneidad de matrices de covarianza
+library(psych)        # cortest.bartlett: esfericidad de Bartlett
+library(car)          # linearHypothesis
+library(emmeans)      # emmeans, mvcontrast
+library(knitr)        # kable: tablas
+```
+
+```{r p1_simulacion}
+set.seed(18)
+diseno <- expand.grid(Variedad = c("Salcedo", "Pasankalla"),
+                      Dosis    = c("N60", "N120"),
+                      Bloque   = paste0("B", 1:10))
+
+# Medias por tratamiento (Rendimiento, Altura, Proteina)
+mu_trat <- rbind(Salcedo.N60      = c(2.6, 118, 13.2),
+                 Salcedo.N120     = c(3.4, 134, 14.0),
+                 Pasankalla.N60   = c(2.4, 105, 14.1),
+                 Pasankalla.N120  = c(2.5, 107, 15.2))
+
+# Matriz de covarianzas del error (correlaciones moderadas)
+sd_e <- c(0.25, 5.0, 0.7)
+R_e  <- matrix(c( 1.0,  0.5, -0.3,
+                  0.5,  1.0, -0.2,
+                 -0.3, -0.2,  1.0), 3, 3)
+Sigma_e <- diag(sd_e) %*% R_e %*% diag(sd_e)
+
+# Efectos de bloque (generados aleatorios y centrados en cero)
+efecto_bloque <- cbind(rnorm(10, 0, 0.15), rnorm(10, 0, 3.0), rnorm(10, 0, 0.3))
+efecto_bloque <- sweep(efecto_bloque, 2, colMeans(efecto_bloque))
+rownames(efecto_bloque) <- paste0("B", 1:10)
+
+clave <- paste(diseno$Variedad, diseno$Dosis, sep = ".")
+mu    <- mu_trat[clave, ] + efecto_bloque[as.character(diseno$Bloque), ]
+Y     <- mu + MASS::mvrnorm(n = nrow(diseno), mu = c(0, 0, 0), Sigma = Sigma_e)
+
+datos <- data.frame(
+  Bloque      = factor(diseno$Bloque,   levels = paste0("B", 1:10)),
+  Variedad    = factor(diseno$Variedad, levels = c("Salcedo", "Pasankalla")),
+  Dosis       = factor(diseno$Dosis,    levels = c("N60", "N120")),
+  Rendimiento = round(Y[, 1], 2),
+  Altura      = round(Y[, 2], 1),
+  Proteina    = round(Y[, 3], 2)
+)
+```
+
+### Estructura de los datos
+
+```{r p1_tab-datos}
+kable(head(datos, 8), caption = "Primeras filas de la base de datos simulada.")
+str(datos)
+```
+
+La base tiene `r nrow(datos)` observaciones y es **balanceada**: cada combinación Variedad por Dosis tiene 10 observaciones, una por bloque. El balance hace más robustas las pruebas multivariadas.
+
+### Estadísticos descriptivos
+
+```{r p1_tab-descriptivos}
+desc <- datos %>%
+  group_by(Variedad, Dosis) %>%
+  summarise(across(c(Rendimiento, Altura, Proteina),
+                   list(media = mean, de = sd)), .groups = "drop")
+
+promedios <- datos %>%
+  group_by(Variedad, Dosis) %>%
+  summarise(Rendimiento = mean(Rendimiento),
+            Altura      = mean(Altura),
+            Proteina    = mean(Proteina), .groups = "drop")
+
+kable(desc, digits = 2,
+      caption = "Media y desviación estándar (de) de cada respuesta por tratamiento.")
+```
+
+Salcedo muestra un rendimiento y una altura claramente mayores con N120 que con N60, mientras que en Pasankalla esos valores casi no cambian. La proteína aumenta con la dosis en ambas variedades y es mayor en Pasankalla. Los análisis siguientes contrastan formalmente estas diferencias.
+
+## Verificación de supuestos
+
+El modelo se ajusta **antes** de evaluar los supuestos, porque el MANOVA supone que el **error** es normal multivariado con matriz de covarianzas común, y eso se evalúa sobre los residuos del modelo.
+
+```{r p1_modelo}
+modelo <- manova(cbind(Rendimiento, Altura, Proteina) ~
+                   Variedad * Dosis + Bloque, data = datos)
+res <- residuals(modelo)
+```
+
+### Normalidad multivariada
+
+Se usa la prueba de Shapiro-Wilk multivariada, con $H_0$: la distribución es normal multivariada. Se aplica a los **residuos** del modelo ($n = 40$), que descuentan el efecto de bloque y tratamientos. Como complemento se aplica por tratamiento ($n = 10$, prueba de poca potencia), que es la forma vista en clase.
+
+```{r p1_tab-normalidad}
+# Residuos del modelo
+sw_res <- mshapiro.test(t(res))
+
+# Por tratamiento
+trat1 <- datos %>% filter(Variedad == "Salcedo",    Dosis == "N60")  %>% dplyr::select(Rendimiento, Altura, Proteina)
+trat2 <- datos %>% filter(Variedad == "Salcedo",    Dosis == "N120") %>% dplyr::select(Rendimiento, Altura, Proteina)
+trat3 <- datos %>% filter(Variedad == "Pasankalla", Dosis == "N60")  %>% dplyr::select(Rendimiento, Altura, Proteina)
+trat4 <- datos %>% filter(Variedad == "Pasankalla", Dosis == "N120") %>% dplyr::select(Rendimiento, Altura, Proteina)
+sw_trat <- lapply(list(trat1, trat2, trat3, trat4), function(x) mshapiro.test(t(x)))
+
+tab_norm <- tibble(
+  Conjunto = c("Residuos del modelo (n = 40)", "Salcedo x N60 (n = 10)", "Salcedo x N120 (n = 10)",
+               "Pasankalla x N60 (n = 10)", "Pasankalla x N120 (n = 10)"),
+  W        = c(sw_res$statistic, sapply(sw_trat, function(z) z$statistic)),
+  p_valor  = c(sw_res$p.value,   sapply(sw_trat, function(z) z$p.value))
+) %>%
+  mutate(Decision = ifelse(p_valor > 0.05, "No se rechaza H0", "Se rechaza H0"))
+
+kable(tab_norm, digits = 4, col.names = c("Conjunto", "W", "Valor p", "Decisión (5 %)"),
+      caption = "Prueba de Shapiro-Wilk multivariada (residuos y por tratamiento).")
+```
+
+No se rechaza la normalidad multivariada de los residuos (W = `r f3(sw_res$statistic)`, `r ptxt(sw_res$p.value)`), aunque el valor p no está lejos de 0.05, ni la de ninguno de los cuatro tratamientos (ver tabla anterior). El supuesto se considera aceptable.
+
+### Homogeneidad de matrices de covarianza
+
+Se usa la prueba M de Box, con $H_0$: las matrices de covarianza de los cuatro tratamientos son iguales. Es sensible a la falta de normalidad y poco estable con $n = 10$ por celda, por lo que se interpreta con cautela.
+
+```{r p1_boxm}
+bm <- heplots::boxM(cbind(Rendimiento, Altura, Proteina) ~ Variedad * Dosis, data = datos)
+bm
+```
+
+No se rechaza la hipótesis de homogeneidad de las matrices de covarianza (`r ptxt(bm$p.value)`). Los grados de libertad (18) corresponden a $(g-1)\,p(p+1)/2 = 3 \times 6$.
+
+### Correlación entre las variables respuesta
+
+Se usa la prueba de esfericidad de Bartlett, con $H_0$: la matriz de correlaciones es la identidad (las respuestas no están correlacionadas). Si se rechaza, la correlación entre las respuestas respalda el interés de analizarlas conjuntamente. Se aplica sobre los **residuos**, porque con los datos crudos las diferencias entre tratamientos inflan las correlaciones.
+
+```{r p1_tab-correlacion}
+options(scipen = 0)
+bart <- cortest.bartlett(cor(res), n = nrow(res))
+bart
+
+kable(round(cor(res), 2), caption = "Correlación entre las respuestas (residuos del modelo).")
+```
+
+Se rechaza $H_0$ (`r ptxt(bart$p.value)`): las respuestas están correlacionadas, lo que respalda el interés de analizarlas conjuntamente. Las correlaciones residuales son moderadas (ver tabla anterior), así que tampoco hay problemas de multicolinealidad.
+
+### Observaciones atípicas
+
+Se calcula la distancia de Mahalanobis al cuadrado de cada residuo, que bajo normalidad sigue aproximadamente una $\chi^2$ con 3 gl, y se marca como atípica toda observación que supere el cuantil 0.999.
+
+```{r p1_fig-mahalanobis, fig.cap="Distancia de Mahalanobis al cuadrado de los residuos; la línea roja es el cuantil 0.999 de la chi-cuadrado."}
+d2    <- mahalanobis(res, center = colMeans(res), cov = cov(res))
+corte <- qchisq(0.999, df = ncol(res))
+which(d2 > corte)   # integer(0) => sin outliers multivariados
+
+plot(d2, pch = 19, ylab = expression(D^2), xlab = "Observación")
+abline(h = corte, col = "red", lty = 2)
+```
+
+Ninguna observación supera el valor de corte (`r f2(corte)`), por lo que no hay valores atípicos multivariados (ver figura anterior).
+
+### Verificaciones complementarias
+
+Además de lo anterior, se pueden mencionar otras comprobaciones que se hicieron para este caso de forma complementaria:
+
+- **Aditividad del DBCA:** el error es la interacción Bloque por Tratamiento, que se asume inexistente; se revisa con un gráfico de perfiles por bloque.
+- **Multicolinealidad:** la correlación residual máxima fue menor que 0.9 (0.44 con la semilla 18).
+- **Sumas de cuadrados de tipo III:** con contrastes suma (`car::Manova`) dieron resultados idénticos a los secuenciales, porque el diseño es balanceado.
+
+<details>
+<summary><b>Show</b></summary>
+
+```{r p1_anexo-multicolinealidad}
+max(abs(cor(res)[upper.tri(cor(res))]))
+```
+
+```{r p1_anexo-aditividad, fig.cap="Perfiles por bloque a través de los tratamientos, para cada respuesta.", fig.width=9, fig.height=4}
+datos_largo <- datos %>%
+  mutate(Trat = interaction(Variedad, Dosis, sep = ".")) %>%
+  pivot_longer(c(Rendimiento, Altura, Proteina),
+               names_to = "Variable", values_to = "Valor")
+
+ggplot(datos_largo, aes(x = Trat, y = Valor, group = Bloque, color = Bloque)) +
+  geom_line(alpha = 0.7) + geom_point(size = 1.2) +
+  facet_wrap(~ Variable, scales = "free_y") +
+  labs(x = "Tratamiento") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+```{r p1_anexo-tipo3}
+modelo_III <- manova(cbind(Rendimiento, Altura, Proteina) ~ Variedad * Dosis + Bloque,
+                     data = datos,
+                     contrasts = list(Variedad = "contr.sum",
+                                      Dosis    = "contr.sum",
+                                      Bloque   = "contr.sum"))
+car::Manova(modelo_III, type = "III", test.statistic = "Pillai")
+```
+
+</details>
+
+## MANOVA factorial
+
+### Hipótesis y prueba elegida
+
+Para cada término (Variedad, Dosis, interacción y Bloque) se contrasta:
+
+$$H_0: \text{el efecto del término sobre el vector de medias es nulo} \qquad \text{vs.} \qquad H_1: \text{el efecto es distinto de cero en al menos una variable}$$
+
+Se reportan los cuatro estadísticos clásicos (Pillai, Wilks, Hotelling-Lawley y Roy), y se toma como prueba principal la de **Pillai**, que es la más robusta frente a incumplimientos de supuestos y adecuada para diseños balanceados.
+
+### Matrices de sumas de cuadrados y productos cruzados
+
+Cada fuente de variación tiene una matriz $3 \times 3$ de sumas de cuadrados y productos cruzados (SCOC). La **diagonal** contiene las sumas de cuadrados univariadas y los elementos **fuera de la diagonal** los productos cruzados, que capturan la covarianza entre respuestas y hacen que el análisis sea multivariado. La matriz total es la suma de todas: $\mathbf{T} = \mathbf{H}_{Var} + \mathbf{H}_{Dosis} + \mathbf{H}_{Var \times Dosis} + \mathbf{H}_{Bloque} + \mathbf{E}$.
+
+```{r p1_matrices}
+Matrices  <- summary(modelo)$SS
+FVariedad <- Matrices$Variedad
+FDosis    <- Matrices$Dosis
+FVarDosis <- Matrices$`Variedad:Dosis`
+FBloque   <- Matrices$Bloque
+W         <- Matrices$Residuals
+
+Matrices   # matrices de cada fuente de variación y residual
+
+T_matriz <- FVariedad + FDosis + FVarDosis + FBloque + W   # SCOC total
+T_matriz
+```
+
+### Medida de ajuste
+
+La bondad de ajuste multivariada compara lo explicado por el factorial (Variedad, Dosis e interacción) con lo que no es ni bloque ni error. Es la medida de ajuste vista en clase y corresponde a $1 - \Lambda$ de Wilks para el efecto factorial conjunto cuando el bloque se incluye en el error, es decir, **sin** ajustar por bloque (la versión ajustada por bloque sería $1 - |\mathbf{E}|/|\mathbf{E}+\mathbf{H}_{factorial}|$):
+
+$$\eta^2 = 1 - \frac{|\mathbf{E} + \mathbf{H}_{Bloque}|}{|\mathbf{T}|}$$
+
+```{r p1_eta2}
+eta2 <- 1 - det(FBloque + W) / det(T_matriz)
+eta2
+```
+
+Un valor cercano a 1 indica que el factorial explica la mayor parte de la variabilidad total. Aquí es `r f3(eta2)`.
+
+### Pruebas de hipótesis
+
+```{r p1_tab-pruebas}
+estadisticos <- c("Pillai", "Wilks", "Hotelling-Lawley", "Roy")
+tab_tests <- map_dfr(estadisticos, function(e) {
+  s <- summary(modelo, test = e)$stats
+  data.frame(Estadistico = e, Efecto = rownames(s)[1:4],
+             Valor = s[1:4, e], F_aprox = s[1:4, "approx F"],
+             gl_num = s[1:4, "num Df"], gl_den = s[1:4, "den Df"],
+             p_valor = s[1:4, "Pr(>F)"], row.names = NULL)
+})
+st_pillai <- summary(modelo, test = "Pillai")$stats
+
+tab_tests_show <- tab_tests %>% mutate(p_valor = format.pval(p_valor, digits = 3, eps = 1e-4))
+kable(tab_tests_show, digits = 3,
+      col.names = c("Estadístico", "Efecto", "Valor", "F aprox.", "gl num.", "gl den.", "Valor p"),
+      caption = "Pruebas multivariadas del modelo MANOVA con los cuatro estadísticos.")
+```
+
+Con la prueba de Pillai (ver tabla anterior):
+
+- **Interacción Variedad por Dosis:** significativa (Pillai = `r f3(st_pillai["Variedad:Dosis","Pillai"])`, F(3, 25) = `r f2(st_pillai["Variedad:Dosis","approx F"])`, `r ptxt(st_pillai["Variedad:Dosis","Pr(>F)"])`). El efecto de la dosis sobre el vector de respuestas depende de la variedad, por lo que los efectos principales no se interpretan de forma aislada y se pasa a efectos simples.
+- **Variedad** (`r ptxt(st_pillai["Variedad","Pr(>F)"])`) y **Dosis** (`r ptxt(st_pillai["Dosis","Pr(>F)"])`): significativas.
+- **Bloque:** significativo (`r ptxt(st_pillai["Bloque","Pr(>F)"])`), lo que indica diferencias entre bloques en el conjunto de respuestas.
+- Los **cuatro estadísticos coinciden** en Variedad, Dosis e interacción: con 1 grado de libertad la matriz $\mathbf{H}$ tiene rango 1, solo hay un autovalor distinto de cero y los cuatro son transformaciones del mismo número, con una F exacta. Solo difieren en el Bloque (9 gl).
+
+## Análisis univariado e interacción
+
+### ANOVA por respuesta y corrección de Bonferroni
+
+Como el MANOVA es significativo, se estudia qué respuestas contribuyen al efecto. Se aplica un ANOVA a cada respuesta con el mismo modelo, y como son tres pruebas se usa la corrección de Bonferroni: $\alpha = 0.05/3 = 0.0167$.
+
+```{r p1_tab-univariado}
+alfa_bonf <- 0.05 / 3
+alfa_bonf
+
+summary.aov(modelo)
+
+aov_uni <- summary.aov(modelo)
+tab_uni <- map_dfr(names(aov_uni), function(n) {
+  a <- aov_uni[[n]]
+  if (!is.data.frame(a)) a <- a[[1]]   # por si el elemento viene anidado en una lista
+  data.frame(Respuesta = sub("Response ", "", n),
+             Efecto    = trimws(rownames(a))[1:4],
+             F_valor   = a$`F value`[1:4],
+             p_valor   = a$`Pr(>F)`[1:4])
+}) %>%
+  mutate(Decision = ifelse(p_valor < alfa_bonf, "Significativo", "No significativo"))
+
+tab_uni_show <- tab_uni %>% mutate(p_valor = format.pval(p_valor, digits = 3, eps = 1e-4))
+kable(tab_uni_show, digits = 3,
+      col.names = c("Respuesta", "Efecto", "F", "Valor p", "Decisión (Bonferroni)"),
+      caption = "ANOVA univariados por respuesta, con decisión usando alfa = 0.05/3.")
+```
+
+```{r p1_valores-univariados, include=FALSE}
+p_prot_int <- tab_uni$p_valor[tab_uni$Respuesta == "Proteina"    & tab_uni$Efecto == "Variedad:Dosis"]
+p_ren_int  <- tab_uni$p_valor[tab_uni$Respuesta == "Rendimiento" & tab_uni$Efecto == "Variedad:Dosis"]
+p_alt_int  <- tab_uni$p_valor[tab_uni$Respuesta == "Altura"      & tab_uni$Efecto == "Variedad:Dosis"]
+p_prot_blo <- tab_uni$p_valor[tab_uni$Respuesta == "Proteina"    & tab_uni$Efecto == "Bloque"]
+```
+
+Según la tabla anterior:
+
+- La **interacción** es significativa en **Rendimiento** (`r ptxt(p_ren_int)`) y **Altura** (`r ptxt(p_alt_int)`), pero **no** en **Proteína** (`r ptxt(p_prot_int)`). En Proteína no se encontró evidencia de interacción.
+- **Variedad** y **Dosis** son significativas en las tres respuestas.
+- El **Bloque** es significativo en Rendimiento y Altura, pero no en Proteína (`r ptxt(p_prot_blo)`).
+
+### Gráficos de la interacción
+
+Si las líneas de las variedades **no son paralelas**, hay interacción.
+
+```{r p1_fig-interaccion, fig.cap="Interacción Variedad por Dosis sobre cada respuesta (medias por tratamiento).", fig.width=9, fig.height=3.5}
+promedios_largo <- promedios %>%
+  pivot_longer(c(Rendimiento, Altura, Proteina),
+               names_to = "Respuesta", values_to = "Media")
+
+ggplot(promedios_largo, aes(x = Dosis, y = Media, group = Variedad, color = Variedad)) +
+  geom_line(linewidth = 1) + geom_point(size = 3) +
+  facet_wrap(~ Respuesta, scales = "free_y")
+```
+
+```{r p1_dif-medias, include=FALSE}
+dif_ren_sal  <- promedios$Rendimiento[2] - promedios$Rendimiento[1]
+dif_ren_pasa <- promedios$Rendimiento[4] - promedios$Rendimiento[3]
+dif_alt_sal  <- promedios$Altura[2]      - promedios$Altura[1]
+dif_alt_pasa <- promedios$Altura[4]      - promedios$Altura[3]
+```
+
+En la figura anterior, al pasar de N60 a N120 el rendimiento de Salcedo aumenta `r f2(dif_ren_sal)` t/ha y el de Pasankalla cambia `r f2(dif_ren_pasa)` t/ha; la altura aumenta `r f2(dif_alt_sal)` cm en Salcedo y `r f2(dif_alt_pasa)` cm en Pasankalla. Las líneas divergen, que es la interacción. En Proteína las líneas son casi paralelas, lo que coincide con la ausencia de interacción univariada.
+
+### Efectos simples
+
+Como la interacción es significativa, se estudia el efecto de un factor **dentro de cada nivel** del otro con `emmeans` y `mvcontrast`, que aplica una prueba $T^2$ de Hotelling a cada contraste usando el modelo completo (con bloque y el error combinado, 27 gl, de modo que $F$ tiene 3 y 25 gl).
+
+```{r p1_efectos-simples}
+fit <- lm(cbind(Rendimiento, Altura, Proteina) ~ Variedad * Dosis + Bloque, data = datos)
+
+# Variedad dentro de cada Dosis
+emmVar <- emmeans(fit, ~ Variedad | Dosis | rep.meas)
+ev <- mvcontrast(emmVar, "pairwise", mult.name = "rep.meas", by = "Dosis", adjust = "none")
+
+# Dosis dentro de cada Variedad
+emmDosis <- emmeans(fit, ~ Dosis | Variedad | rep.meas)
+ed <- mvcontrast(emmDosis, "pairwise", mult.name = "rep.meas", by = "Variedad", adjust = "none")
+
+# Con by= hay un solo contraste por grupo, así que el ajuste se hace
+# manualmente (Bonferroni) sobre la familia de 2 pruebas de cada efecto simple
+ev_df <- as.data.frame(ev) %>% mutate(p_bonf = p.adjust(p.value, "bonferroni"))
+ed_df <- as.data.frame(ed) %>% mutate(p_bonf = p.adjust(p.value, "bonferroni"))
+```
+
+```{r p1_tab-ev}
+kable(ev_df %>% mutate(across(c(p.value, p_bonf), ~ format.pval(.x, digits = 3, eps = 1e-4))),
+      digits = 3,
+      caption = "Efecto simple de la Variedad dentro de cada Dosis (T2 de Hotelling; Bonferroni sobre 2 pruebas).")
+```
+
+```{r p1_tab-ed}
+kable(ed_df %>% mutate(across(c(p.value, p_bonf), ~ format.pval(.x, digits = 3, eps = 1e-4))),
+      digits = 3,
+      caption = "Efecto simple de la Dosis dentro de cada Variedad (T2 de Hotelling; Bonferroni sobre 2 pruebas).")
+```
+
+De las dos tablas anteriores:
+
+- Las dos variedades **difieren** significativamente en ambas dosis, y la diferencia es mayor con N120.
+- La dosis tiene un efecto **significativo en Salcedo** pero **no en Pasankalla** (`r ptxt(ed_df$p.value[2])`; con Bonferroni, `r ptxt(ed_df$p_bonf[2])`). La interacción tiene entonces una forma concreta: aumentar el nitrógeno cambia el perfil de respuestas de Salcedo, pero no el de Pasankalla.
+- Como la interacción es significativa no hizo falta analizar efectos principales ni comparar las cuatro combinaciones de tratamiento.
+
+## Conclusiones
+
+- **Supuestos.** No se evidenciaron incumplimientos importantes: normalidad multivariada de los residuos (`r ptxt(sw_res$p.value)`), homogeneidad de covarianzas por Box M (`r ptxt(bm$p.value)`), correlación entre respuestas y ausencia de valores atípicos multivariados. Los resultados deben leerse con α = 0.05 y considerando la sensibilidad de las pruebas. El diseño balanceado favorece el MANOVA, pero no garantiza los supuestos.
+
+- **Interacción.** Variedad y Dosis de nitrógeno interactúan significativamente sobre el conjunto de respuestas (Pillai, `r ptxt(st_pillai["Variedad:Dosis","Pr(>F)"])`), por lo que la dosis se analizó dentro de cada variedad.
+
+- **Respuestas que contribuyen.** Con Bonferroni ($\alpha = 0.0167$), la interacción es significativa en Rendimiento y Altura, pero no en Proteína, donde no se encontró evidencia de interacción.
+
+- **Efectos simples.** La dosis tiene efecto multivariado significativo en Salcedo, pero no en Pasankalla. De N60 a N120, Salcedo aumentó `r f2(dif_ren_sal)` t/ha en Rendimiento y `r f2(dif_alt_sal)` cm en Altura; Pasankalla, `r f2(dif_ren_pasa)` t/ha y `r f2(dif_alt_pasa)` cm. Las variedades difieren significativamente dentro de cada dosis.
+
+- **Proteína en Pasankalla.** Aumentó `r f2(promedios$Proteina[4] - promedios$Proteina[3])` puntos porcentuales con la dosis, pero el contraste multivariado no es significativo. Como no se contrastó esa variable por separado, no se puede concluir si el aumento es significativo.
+
+- **Síntesis.** En los datos simulados, la respuesta a la dosis depende de la variedad y la interacción se manifiesta principalmente en Rendimiento y Altura.
+
+- **Limitaciones.** Los datos son simulados, por lo que las conclusiones no constituyen evidencia de un experimento real. El bloque se trató como efecto fijo y, con 10 observaciones por tratamiento, las pruebas de supuestos por tratamiento tienen poca potencia.
+
+
+<br>
+
+# Pregunta 2 - Análisis MANCOVA en un Diseño Completamente al Azar (DCA)
+
+```{r p2_fig, include=FALSE}
+knitr::opts_chunk$set(fig.width = 8, fig.height = 5)
+```
+
+## Introducción
+
+El presente informe desarrolla un análisis de covarianza multivariado (MANCOVA) bajo un Diseño Completamente al Azar (DCA), con el propósito de evaluar si existen diferencias entre tres tipos de fertilizante respecto a las variables respuesta altura final y peso final, considerando como covariables la altura inicial y el peso inicial.
+
+La incorporación de las covariables permite evaluar las diferencias entre los tratamientos teniendo en cuenta las condiciones iniciales de las unidades experimentales. De esta manera, se busca determinar si el tipo de fertilizante presenta un efecto significativo conjunto sobre las variables respuesta, después de ajustar por las mediciones iniciales.
+
+## Carga y exploración de los datos
+
+### Importación de la base de datos
+
+Se importa la base de datos desde un archivo Excel y se revisa la estructura de las variables.
+
+```{r p2_carga-datos, message=FALSE, warning=FALSE}
+# Cargar las librerías necesarias
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(mvnormtest)
+library(biotools)
+library(knitr)
+
+datos_preg2 <- read_excel(
+  "C:/Users/Administrador/OneDrive/Documentos/Examen_Parcial_Multivariadas/Base_MANCOVA_Fertilizantes.xlsx",
+  sheet = "Sheet1")
+
+# Examinar la estructura y las primeras observaciones
+str(datos_preg2)
+head(datos_preg2)
+
+# Verificar dimensiones y nombres de las variables
+dim(datos_preg2)
+names(datos_preg2)
+```
+
+La variable `Fertilizante` representa el factor de tratamiento. Las variables `Altura_Final` y `Peso_Final` son las respuestas analizadas conjuntamente, mientras que `Altura_Inicial` y `Peso_Inicial` se consideran covariables.
+
+### Preparación de los datos
+
+```{r p2_preparacion-datos}
+# Convertir el tratamiento en una variable categórica
+datos_preg2$Fertilizante <- factor(datos_preg2$Fertilizante)
+
+# Verificar los niveles y el número de observaciones por grupo
+levels(datos_preg2$Fertilizante)
+table(datos_preg2$Fertilizante)
+
+# Comprobar si existen datos faltantes
+colSums(is.na(datos_preg2))
+
+# Revisar la estructura final
+str(datos_preg2)
+```
+
+La base contiene 60 observaciones distribuidas equitativamente entre los tres fertilizantes, con 20 observaciones por grupo. No se identificaron datos faltantes en las cinco variables originales, por lo que todas las observaciones pueden utilizarse en el análisis.
+
+### Planteamiento del modelo
+
+El modelo MANCOVA considera dos variables respuesta, dos covariables y un factor de tratamiento. De forma general, se expresa como:
+
+\[
+\mathbf{Y}_{ij}
+=
+\boldsymbol{\mu}
++\boldsymbol{\tau}_i
++\boldsymbol{\beta}_1 X_{1ij}
++\boldsymbol{\beta}_2 X_{2ij}
++\boldsymbol{\varepsilon}_{ij}
+\]
+
+Donde:
+
+- \(\mathbf{Y}_{ij}\) es el vector de altura final y peso final.
+- \(\boldsymbol{\mu}\) es el vector de medias generales.
+- \(\boldsymbol{\tau}_i\) representa el efecto del fertilizante \(i\).
+- \(X_{1ij}\) corresponde a la altura inicial.
+- \(X_{2ij}\) corresponde al peso inicial.
+- \(\boldsymbol{\beta}_1\) y \(\boldsymbol{\beta}_2\) representan los efectos de las covariables.
+- \(\boldsymbol{\varepsilon}_{ij}\) es el vector de errores aleatorios.
+
+## Análisis descriptivo
+
+### Estadísticos descriptivos por fertilizante
+
+Se calculan las medias y desviaciones estándar de las variables iniciales y finales para comparar descriptivamente los tratamientos.
+
+```{r p2_descriptivos}
+# Calcular estadísticas descriptivas para cada fertilizante
+descriptivos_preg2 <- datos_preg2 %>%
+  group_by(Fertilizante) %>%
+  summarise(
+    n = n(),
+    Media_Altura_Inicial = mean(Altura_Inicial),
+    DE_Altura_Inicial = sd(Altura_Inicial),
+    Media_Peso_Inicial = mean(Peso_Inicial),
+    DE_Peso_Inicial = sd(Peso_Inicial),
+    Media_Altura_Final = mean(Altura_Final),
+    DE_Altura_Final = sd(Altura_Final),
+    Media_Peso_Final = mean(Peso_Final),
+    DE_Peso_Final = sd(Peso_Final),
+    .groups = "drop"
+  )
+
+# Presentar los resultados con tres decimales
+knitr::kable(
+  descriptivos_preg2,
+  digits = 3,
+  caption = "Estadísticos descriptivos por tipo de fertilizante"
+)
+```
+
+**Interpretación:** El fertilizante B presentó la mayor media de altura final (30.611) y peso final (12.765). Le siguió el fertilizante C, con medias de 29.728 y 11.328, respectivamente. El fertilizante A registró las menores medias: 27.452 en altura final y 10.217 en peso final. Estas diferencias son descriptivas y no demuestran por sí solas la existencia de diferencias estadísticamente significativas, pues deben evaluarse considerando las covariables iniciales.
+
+### Gráfico de cajas de la altura final
+
+```{r p2_boxplot-altura, fig.width=8, fig.height=5}
+# Comparar la distribución de la altura final entre tratamientos
+ggplot(
+  datos_preg2,
+  aes(x = Fertilizante, y = Altura_Final, fill = Fertilizante)
+) +
+  geom_boxplot(alpha = 0.7) +
+  labs(
+    title = "Distribución de la altura final según fertilizante",
+    x = "Tipo de fertilizante",
+    y = "Altura final"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+**Interpretación:** El gráfico permite comparar las medianas, la dispersión y los posibles valores atípicos de la altura final entre los tres fertilizantes. Las diferencias visuales deben interpretarse como descriptivas y no como evidencia definitiva de significancia estadística.
+
+### Gráfico de cajas del peso final
+
+```{r p2_boxplot-peso, fig.width=8, fig.height=5}
+# Comparar la distribución del peso final entre tratamientos
+ggplot(
+  datos_preg2,
+  aes(x = Fertilizante, y = Peso_Final, fill = Fertilizante)
+) +
+  geom_boxplot(alpha = 0.7) +
+  labs(
+    title = "Distribución del peso final según fertilizante",
+    x = "Tipo de fertilizante",
+    y = "Peso final"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+**Interpretación:** El gráfico muestra la distribución del peso final para cada fertilizante y permite observar diferencias en las medianas y la variabilidad. Esta comparación complementa las estadísticas descriptivas antes de realizar la evaluación multivariada.
+
+### Comparación gráfica de las medias
+
+```{r p2_graficos-medias, fig.width=8, fig.height=5}
+# Calcular las medias de las variables respuesta por tratamiento
+medias_preg2 <- datos_preg2 %>%
+  group_by(Fertilizante) %>%
+  summarise(
+    Altura = mean(Altura_Final),
+    Peso = mean(Peso_Final),
+    .groups = "drop"
+  )
+
+# Gráfico de medias de altura final
+ggplot(medias_preg2, aes(x = Fertilizante, y = Altura)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  labs(
+    title = "Media de altura final por fertilizante",
+    x = "Tipo de fertilizante",
+    y = "Media de altura final"
+  ) +
+  theme_minimal()
+
+# Gráfico de medias de peso final
+ggplot(medias_preg2, aes(x = Fertilizante, y = Peso)) +
+  geom_col(fill = "darkseagreen4", alpha = 0.8) +
+  labs(
+    title = "Media de peso final por fertilizante",
+    x = "Tipo de fertilizante",
+    y = "Media de peso final"
+  ) +
+  theme_minimal()
+```
+
+**Interpretación:** Ambos gráficos muestran que el fertilizante B presenta las mayores medias observadas de altura final y peso final. Sin embargo, estas medias no están ajustadas por las covariables iniciales, por lo que la conclusión inferencial se basa en el modelo MANCOVA.
+
+## Evaluación de supuestos
+
+### Normalidad multivariada por tratamiento
+
+La prueba de Shapiro-Wilk multivariada se aplica por separado a cada grupo. Para utilizar `mshapiro.test()`, las variables deben organizarse en filas y las observaciones en columnas.
+
+Las hipótesis para cada grupo son:
+
+\[
+H_0:\text{Las respuestas siguen una distribución normal multivariada}
+\]
+
+\[
+H_1:\text{Las respuestas no siguen una distribución normal multivariada}
+\]
+
+Se utiliza un nivel de significancia de \(\alpha=0.05\).
+
+```{r p2_normalidad, message=FALSE, warning=FALSE}
+# Seleccionar las dos variables respuesta para el fertilizante A
+trat1_preg2 <- datos_preg2 %>%
+  dplyr::filter(Fertilizante == "Fertilizante_A") %>%
+  dplyr::select(Altura_Final, Peso_Final) %>%
+  na.omit()
+
+# Seleccionar las dos variables respuesta para el fertilizante B
+trat2_preg2 <- datos_preg2 %>%
+  dplyr::filter(Fertilizante == "Fertilizante_B") %>%
+  dplyr::select(Altura_Final, Peso_Final) %>%
+  na.omit()
+
+# Seleccionar las dos variables respuesta para el fertilizante C
+trat3_preg2 <- datos_preg2 %>%
+  dplyr::filter(Fertilizante == "Fertilizante_C") %>%
+  dplyr::select(Altura_Final, Peso_Final) %>%
+  na.omit()
+
+# Verificar que cada grupo tenga 20 observaciones y dos variables
+dim(trat1_preg2)
+dim(trat2_preg2)
+dim(trat3_preg2)
+
+# Aplicar Shapiro-Wilk multivariado por grupo
+normalidad_A_preg2 <- mvnormtest::mshapiro.test(
+  t(as.matrix(trat1_preg2))
+)
+
+normalidad_B_preg2 <- mvnormtest::mshapiro.test(
+  t(as.matrix(trat2_preg2))
+)
+
+normalidad_C_preg2 <- mvnormtest::mshapiro.test(
+  t(as.matrix(trat3_preg2))
+)
+
+normalidad_A_preg2
+normalidad_B_preg2
+normalidad_C_preg2
+```
+
+**Regla de decisión:**
+
+- Si \(p>0.05\), no se rechaza la hipótesis nula.
+- Si \(p\leq0.05\), se rechaza la hipótesis nula.
+
+**Interpretación:** Para el fertilizante A se obtuvo \(W=0.94412\) y \(p=0.2865\), por lo que no se rechaza la hipótesis nula. Para B se obtuvo \(W=0.90337\) y \(p=0.04772\), por lo que se rechaza la hipótesis nula al 5 %. Para C se obtuvo \(W=0.97088\) y \(p=0.7733\), por lo que tampoco se rechaza la hipótesis nula.
+
+En consecuencia, se detecta evidencia de desviación de la normalidad multivariada en el fertilizante B. Esta prueba se aplicó a las respuestas observadas dentro de cada tratamiento y no directamente a los residuos del modelo ajustado, por lo que el resultado debe considerarse al interpretar la MANCOVA.
+
+### Homogeneidad de las matrices de covarianzas
+
+La prueba M de Box evalúa si las matrices de covarianzas de las variables respuesta son iguales entre los grupos.
+
+Las hipótesis son:
+
+\[
+H_0:\boldsymbol{\Sigma}_A
+=\boldsymbol{\Sigma}_B
+=\boldsymbol{\Sigma}_C
+\]
+
+\[
+H_1:\text{Al menos una matriz de covarianzas es diferente}
+\]
+
+```{r p2_box-m, message=FALSE, warning=FALSE}
+# Evaluar la igualdad de las matrices de covarianzas entre tratamientos
+boxm_preg2 <- biotools::boxM(
+  datos_preg2[, c("Altura_Final", "Peso_Final")],
+  datos_preg2$Fertilizante
+)
+
+boxm_preg2
+```
+
+**Regla de decisión:**
+
+- Si \(p>0.05\), no se rechaza la hipótesis nula.
+- Si \(p\leq0.05\), se rechaza la hipótesis nula.
+
+**Interpretación:** La prueba obtuvo \(\chi^2=1.7436\), con 6 grados de libertad y \(p=0.9417\). Como \(p>0.05\), no se rechaza la hipótesis de igualdad de las matrices de covarianzas. Por tanto, no se encontró evidencia estadísticamente significativa de diferencias entre dichas matrices. Este resultado debe interpretarse junto con la desviación de normalidad detectada en el fertilizante B, ya que la prueba M de Box es sensible a las desviaciones de la normalidad.
+
+### Correlación entre las variables respuesta
+
+Se calcula la correlación entre altura final y peso final para describir su asociación lineal.
+
+```{r p2_correlacion-respuestas}
+# Calcular la matriz de correlación de las respuestas
+correlacion_respuestas_preg2 <- cor(
+  datos_preg2[, c("Altura_Final", "Peso_Final")],
+  use = "complete.obs"
+)
+
+correlacion_respuestas_preg2
+```
+
+**Interpretación:** La correlación entre la altura final y el peso final fue \(r=0.3998\), lo que indica una asociación lineal positiva de magnitud moderada. En términos descriptivos, las observaciones con mayor altura final tienden a presentar también un mayor peso final. Esta asociación no implica causalidad y complementa el análisis conjunto de ambas respuestas.
+
+## Preparación de las covariables
+
+Para facilitar la interpretación del modelo, se centran las covariables restándoles sus medias generales. El centrado expresa cada medición inicial como una desviación respecto a la media de esa variable.
+
+```{r p2_centrar-covariables}
+# Crear covariables centradas respecto a sus medias generales
+datos_preg2 <- datos_preg2 %>%
+  mutate(
+    Altura_Inicial_c = Altura_Inicial -
+      mean(Altura_Inicial),
+    Peso_Inicial_c = Peso_Inicial -
+      mean(Peso_Inicial)
+  )
+
+# Comprobar las nuevas variables
+head(
+  datos_preg2[, c(
+    "Fertilizante",
+    "Altura_Inicial_c",
+    "Peso_Inicial_c",
+    "Altura_Final",
+    "Peso_Final"
+  )]
+)
+```
+
+El centrado no modifica las diferencias entre observaciones ni el efecto ajustado del fertilizante. Permite evaluar el efecto del tratamiento considerando las condiciones iniciales de las unidades experimentales.
+
+## Análisis MANCOVA en DCA
+
+### Hipótesis del efecto del fertilizante
+
+El objetivo principal es determinar si existen diferencias entre los fertilizantes en el vector de medias de las variables respuesta, después de ajustar por la altura inicial y el peso inicial.
+
+Las hipótesis son:
+
+\[
+H_0:\boldsymbol{\mu}_{A,\mathrm{aj}}
+=\boldsymbol{\mu}_{B,\mathrm{aj}}
+=\boldsymbol{\mu}_{C,\mathrm{aj}}
+\]
+
+\[
+H_1:\text{Al menos un vector de medias ajustadas es diferente}
+\]
+
+Cada vector de medias ajustadas contiene los valores esperados de altura final y peso final para un fertilizante, considerando constantes las covariables.
+
+### Ajuste del modelo
+
+Se ajusta el modelo MANCOVA mediante `manova()`. Las covariables se incluyen antes del factor de tratamiento para evaluar el efecto del fertilizante después de incorporar las covariables en la tabla de pruebas secuenciales.
+
+```{r p2_modelo-mancova}
+# Ajustar el modelo multivariado:
+# respuestas = altura final y peso final
+# covariables = altura inicial y peso inicial centradas
+# factor de tratamiento = fertilizante
+modelo_mancova_preg2 <- manova(
+  cbind(Altura_Final, Peso_Final) ~
+    Altura_Inicial_c +
+    Peso_Inicial_c +
+    Fertilizante,
+  data = datos_preg2
+)
+
+# Mostrar el modelo ajustado
+modelo_mancova_preg2
+```
+
+El modelo analiza simultáneamente las dos variables respuesta y permite evaluar el efecto de las covariables y del fertilizante sobre el conjunto multivariado.
+
+### Prueba multivariada de Pillai
+
+Se utiliza la traza de Pillai para evaluar los efectos de las covariables y del fertilizante sobre las variables respuesta consideradas conjuntamente.
+
+```{r p2_prueba-pillai}
+# Obtener las pruebas multivariadas mediante la traza de Pillai
+resultado_pillai_preg2 <- summary(
+  modelo_mancova_preg2,
+  test = "Pillai"
+)
+
+# Mostrar la tabla de resultados
+resultado_pillai_preg2
+```
+
+#### Hipótesis para el efecto del fertilizante
+
+\[
+H_0:\boldsymbol{\mu}_{A,\mathrm{aj}}
+=\boldsymbol{\mu}_{B,\mathrm{aj}}
+=\boldsymbol{\mu}_{C,\mathrm{aj}}
+\]
+
+\[
+H_1:\text{Al menos un vector de medias ajustadas es diferente}
+\]
+
+**Nivel de significancia:** \(\alpha=0.05\).
+
+**Regla de decisión:** Se rechaza \(H_0\) si \(p\leq0.05\); en caso contrario, no se rechaza.
+
+**Interpretación de los resultados:**
+
+Para el fertilizante se obtuvo una traza de Pillai de \(V=0.75448\), un estadístico \(F=16.658\) y un valor \(p=1.059\times10^{-10}\). Como \(p<0.05\), se rechaza la hipótesis nula. Por tanto, existen diferencias estadísticamente significativas entre los fertilizantes respecto al conjunto de altura final y peso final, después de considerar la altura inicial y el peso inicial como covariables.
+
+Asimismo, la altura inicial presentó un efecto multivariado significativo (\(V=0.66824\), \(F=54.384\), \(p=1.154\times10^{-13}\)), al igual que el peso inicial (\(V=0.62383\), \(F=44.777\), \(p=3.430\times10^{-12}\)). Esto indica que ambas covariables están asociadas significativamente con el conjunto de variables respuesta dentro del modelo.
+
+La significancia global del fertilizante no permite identificar por sí sola cuáles tratamientos difieren entre sí ni afirmar que cada variable respuesta presenta individualmente diferencias significativas. La conclusión se refiere al conjunto multivariado de respuestas.
+
+## Conclusiones
+
+1. **Análisis descriptivo:** El fertilizante B presentó las mayores medias observadas de altura final (30.611) y peso final (12.765), seguido de C y A.
+
+2. **Normalidad multivariada:** No se rechazó la normalidad para A (\(p=0.2865\)) ni para C (\(p=0.7733\)); en cambio, se detectó una desviación significativa para B (\(p=0.04772\)).
+
+3. **Homogeneidad de covarianzas:** La prueba M de Box no evidenció diferencias significativas entre las matrices de covarianzas (\(\chi^2=1.7436\), \(gl=6\), \(p=0.9417\)).
+
+4. **Resultados MANCOVA:** El fertilizante presentó un efecto multivariado significativo (\(V_{\text{Pillai}}=0.75448\), \(F=16.658\), \(p=1.059\times10^{-10}\)). También fueron significativas la altura inicial (\(p=1.154\times10^{-13}\)) y el peso inicial (\(p=3.430\times10^{-12}\)).
+
+5. **Conclusión final:** Existen diferencias significativas entre los fertilizantes en el conjunto de altura final y peso final, ajustando por las covariables iniciales. Aunque B presentó las mayores medias observadas, la prueba global no permite afirmar que sea estadísticamente superior a los otros tratamientos. Además, la desviación de normalidad detectada en el fertilizante B debe tenerse en cuenta al interpretar los resultados.
+
+
+<br>
+
+# Pregunta 3 - MANCOVA en DBCA: Efecto de Fertilizantes Iniciadores en el Cultivo de Soya
+
+```{r p3_fig, include=FALSE}
+knitr::opts_chunk$set(fig.width = 8, fig.height = 5)
+```
+
+## Introducción
+
+El MANCOVA en un Diseño de Bloques Completos al Azar (DBCA) modela simultáneamente $p$ variables dependientes correlacionadas ($\mathbf{Y}$), controlando una fuente conocida de heterogeneidad espacial/temporal mediante variables de bloqueo ($\boldsymbol{\beta}_j$) y ajustando por el sesgo lineal de una o más covariables continuas concomitantes ($\mathbf{X}$).
+
+### Ecuación del Modelo
+Para la observación en el $i$-ésimo tratamiento y $j$-ésimo bloque:
+
+$$
+  \mathbf{y}_{ij} = \boldsymbol{\mu} + \boldsymbol{\tau}_i + \boldsymbol{\beta}_j + \boldsymbol{\Gamma} (\mathbf{x}_{ij} - \bar{\mathbf{x}}_{\cdot\cdot}) + \boldsymbol{\varepsilon}_{ij}
+$$
+
+Donde:\
+$\mathbf{y}_{ij} \in \mathbb{R}^{p \times 1}$: Vector de respuestas observadas (ej. Rendimiento y Biomasa de soya).\
+$\boldsymbol{\mu}$: Vector de medias generales.\
+$\boldsymbol{\tau}_i$: Efecto del $i$-ésimo tratamiento fertilizante ($i = 1, \dots, 4$).\
+$\boldsymbol{\beta}_j$: Efecto del $j$-ésimo bloque/ambiente ($j = 1, \dots, b$).\
+$\boldsymbol{\Gamma} \in \mathbb{R}^{p \times m}$: Matriz de pendientes de regresión parcial respecto a la covariable (ej. Biomasa de centeno).\
+$\boldsymbol{\varepsilon}_{ij} \sim \mathcal{N}_p(\mathbf{0}, \boldsymbol{\Sigma})$: Vector de errores residuales multivariados.\
+
+## Carga y exploración de datos
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(car)          
+library(biotools)     
+library(emmeans)      
+```
+
+### Base de datos
+
+La base está inspirada en una investigación publicada en 2024 sobre el efecto de fertilizantes iniciadores en el cultivo de soya bajo siembra directa con centeno como cultivo de cobertura.
+- Fuente original: Dryad.
+- Autores: Allen, Pelzer, Brockmueller y colaboradores.
+- Diseño experimental: bloques completos aleatorizados.
+- Variables originales: rendimiento, biomasa de soya, densidad de plantas, biomasa de malezas y otras mediciones agronómicas.
+
+```{r}
+library(readxl)
+
+pregunta_3 <- read_excel(
+  "C:/Users/Administrador/OneDrive/Documentos/Examen_Parcial_Multivariadas/datos_soya.xlsx",
+  sheet = "Datos_didacticos")
+
+# Preparación de variables de diseño y factores
+pregunta_3 <- pregunta_3 %>%
+  mutate(
+    Tratamiento = factor(Tratamiento, levels = c("CT", "FM", "PL", "SN")),
+    Sitio_anio  = factor(Sitio_anio),
+    Bloque      = factor(Bloque)
+  )
+glimpse(pregunta_3)
+```
+
+Para este análisis seleccionamos:\
+Respuestas ($\mathbf{Y}$): Rendimiento_soya_kg_ha ($Y_1$) y Biomasa_soya_kg_ha ($Y_2$).\
+Covariable ($X$): Biomasa_centeno_kg_ha_cov (interferencia del cultivo de cobertura previo).\
+Bloque: Sitio_anio (5 macro-bloques ambientales que agrupan las variaciones estacionales de suelo y clima).\
+Tratamiento: Tratamiento (CT = Control, FM = Harina de plumas, PL = Gallinaza, SN = Nitrato de sodio).\
+
+
+```{r}
+# Gráfico de dispersión multivariada por tratamiento
+ggplot(pregunta_3, aes(x = Biomasa_centeno_kg_ha_cov, y = Rendimiento_soya_kg_ha, color = Tratamiento)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Relación entre Rendimiento de Soya y Biomasa de Cobertura",
+    x = "Biomasa de centeno (kg/ha) [Covariable]",
+    y = "Rendimiento de soya (kg/ha) [Respuesta 1]"
+  ) +
+  theme_minimal()
+```
+
+## Verificación de supuestos críticos
+
+```{r}
+# Modelo con interacción para verificar paralelismo multivariado
+modelo_interaccion <- lm(
+  cbind(Rendimiento_soya_kg_ha, Biomasa_soya_kg_ha) ~ Sitio_anio + Biomasa_centeno_kg_ha_cov * Tratamiento,
+  data = pregunta_3
+)
+
+# Test de hipótesis sobre la interacción
+paralelismo_test <- Anova(modelo_interaccion, type = "III", test = "Wilks")
+print(paralelismo_test)
+```
+
+*Si el p-valor para el término Biomasa_centeno_kg_ha_cov:Tratamiento es mayor a 0.05, no se rechaza la hipótesis de paralelismo, garantizando la validez del modelo clásico de pendientes comunes.*
+
+
+## Ajuste del modelo MANCOVA en DBCA
+
+```{r}
+# Ajuste del modelo aditivo multivariado
+mancova_soya <- lm(
+  cbind(Rendimiento_soya_kg_ha, Biomasa_soya_kg_ha) ~ Biomasa_centeno_kg_ha_cov + Sitio_anio + Tratamiento,
+  data = pregunta_3
+)
+
+# Tabla MANCOVA con Sumas de Cuadrados y Productos Cruzados Tipo III
+tabla_mancova <- Anova(mancova_soya, type = "III", test = "Wilks")
+print(tabla_mancova)
+```
+
+## Diagnósticos de residuos
+
+```{r}
+residuos_matriz <- residuals(mancova_soya)
+# Homogeneidad de Matrices de Covarianza (Prueba M de Box)
+biotools::boxM(residuos_matriz, pregunta_3$Tratamiento)
+```
+
+## Medias Ajustadas por la Covariable y Desglose Univariado
+
+```{r}
+# Medias ajustadas (por la covariable y el bloque) de ambas respuestas por tratamiento
+em_resp <- emmeans(mancova_soya, ~ Tratamiento | rep.meas)
+summary(em_resp)
+
+# Comparaciones múltiples post-hoc (Tukey) dentro de cada respuesta
+pairs(em_resp, adjust = "tukey")
+```
+
+## Conclusiones:
+
+- Efecto de la Covariable: La inclusión de la biomasa de centeno ajusta las diferencias basales entre parcelas, mejorando la precisión en la estimación de la respuesta de la soya.\
+- Efecto del Bloqueo: El término ambiental (Sitio_anio) absorbe la variabilidad macro-ambiental entre localidades y campañas.\
+- Efecto del Tratamiento: La prueba de $\Lambda$ de Wilks evalúa de forma conjunta si las fuentes fertilizantes (FM, PL, SN) incrementan significativamente el desempeño agronómico multivariado de la soya en comparación con el testigo sin fertilizar (CT).\
+
+
+<br>
+
+# Pregunta 4 - Regresión Multivariada
+
+```{r p4_fig, include=FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 6)
+```
+
+## Caso
+
+Un analista de datos está trabajando para una firma consultora en Lima, de cara a las próximas elecciones. Su objetivo es entender qué factores predicen qué tan probable es que un ciudadano peruano acuda a votar (participación electoral, evitando el ausentismo) y qué tan favorable es su percepción hacia el sistema democrático.
+
+## Objetivo y estructura del análisis
+
+Se busca entender qué factores predicen la **participación electoral** y la **percepción hacia el sistema democrático** de los ciudadanos peruanos.
+
+| Tipo | Variable | Descripción |
+|------------------------|------------------------|------------------------|
+| X1 | `indice_pobreza` | Vulnerabilidad económica (0 a 10) |
+| X2 | `percepcion_corrupcion` | Corrupción percibida en las autoridades (0 a 10) |
+| X3 | `edad` | Edad del ciudadano (18 a 85) |
+| Y1 | `propension_votar` | Probabilidad declarada de votar (1 a 20) |
+| Y2 | `confianza_democracia` | Creencia en que la democracia defiende sus derechos (1 a 20) |
+| Y3 | `voto_ideologico` | Voto por plan de gobierno (20) vs. clientelismo (1) |
+| Y4 | `aprobacion_autoridades` | Satisfacción con la gestión actual (1 a 20) |
+| Y5 | `interes_politico` | Consumo de noticias / debate político (1 a 20) |
+
+```{r p4_paquetes}
+library(mvnormtest)  
+library(psych)       
+library(car)      
+library(ggplot2)     
+library(tidyr)       
+library(knitr)       
+library(readxl)   
+```
+
+## Lectura de los datos
+
+Es una base **simulada** con relaciones plausibles según el caso (más corrupción percibida, menos propensión a votar; más pobreza, menos voto ideológico; más edad, más interés político).
+
+```{r p4_datos}
+pregunta_4 <- read_excel(
+  "C:/Users/Administrador/OneDrive/Documentos/Examen_Parcial_Multivariadas/datos_electorales.xlsx",
+  sheet = "datos")
+
+vars_x <- c("indice_pobreza", "percepcion_corrupcion", "edad")
+vars_y <- c("propension_votar", "confianza_democracia", "voto_ideologico",
+            "aprobacion_autoridades", "interes_politico")
+
+str(pregunta_4)
+```
+
+## Exploración inicial
+
+```{r p4_explora}
+kable(head(pregunta_4), caption = "Primeras filas de la base de datos")
+dim(pregunta_4)
+kable(describe(pregunta_4[, c(vars_x, vars_y)])[, c("mean","sd","min","max","skew")],
+      digits = 2, caption = "Resumen descriptivo")
+```
+
+## Supuesto de normalidad multivariada
+
+Se evalúa con el test de **Shapiro-Wilk multivariado** sobre las 5 variables dependientes.
+
+-   H0: Las variables dependientes siguen una distribución normal multivariada.
+-   Ha: Las variables dependientes NO siguen una distribución normal multivariada.
+
+```{r p4_normalidad}
+vars_dependientes <- pregunta_4[, vars_y]
+mshapiro.test(t(as.matrix(vars_dependientes)))
+```
+
+*Dado que el p-valor es menor a 0.05, estadísticamente se rechaza la hipótesis nula de normalidad multivariada. Sin embargo, el alto valor del estadístico W (0.99) indica que la desviación gráfica es mínima. Al contar con un tamaño de muestra amplio (n=400), el modelo se apoya en el Teorema del Límite Central, garantizando que el análisis de regresión multivariada mantiene total validez y robustez.*
+
+## Supuesto de variables dependientes correlacionadas (Bartlett)
+
+-   H0: la matriz de correlaciones es la identidad (las Y no están correlacionadas).
+-   Ha: existe correlación entre las Y, lo que justifica el análisis multivariado.
+
+```{r p4_bartlett}
+options(scipen = 0)
+cortest.bartlett(cor(vars_dependientes), n = nrow(vars_dependientes))
+kable(round(cor(vars_dependientes), 2), caption = "Matriz de correlaciones entre las Y")
+```
+
+*La prueba de esfericidad de Bartlett arrojó un p-valor prácticamente nulo ($3.39 \times 10^{-61}$), siendo muy inferior al nivel de significancia estándar de 0.05. Por lo tanto, se rechaza la hipótesis nula, confirmando estadísticamente que la matriz de correlaciones no es una matriz identidad.   Como se observa en la tabla, existe una correlación positiva generalizada entre las distintas actitudes del electorado, al estar estas cinco variables dependientes están interconectadas, queda plenamente justificada la elección metodológica de aplicar un modelo de regresión multivariada para analizarlas en conjunto, lo cual es mucho más preciso que evaluarlas mediante cinco regresiones aisladas.*
+
+
+## Modelo multivariado y significación global
+
+Se ajusta un único modelo con las 5 dependientes  y las 3 independientes.
+
+-   H0: ninguna variable independiente influye sobre las dependientes.
+-   Ha: al menos una variable independiente influye sobre las dependientes.
+
+```{r p4_modelo}
+mod1 <- lm(cbind(propension_votar, confianza_democracia, voto_ideologico,
+                 aprobacion_autoridades, interes_politico) ~
+             indice_pobreza + percepcion_corrupcion + edad,
+           data = pregunta_4)
+
+alias(mod1)   # revisa multicolinealidad perfecta (no debe haber alias)
+```
+
+
+```{r p4_global}
+# Prueba conjunta con los 4 criterios (Pillai, Wilks, Hotelling-Lawley, Roy)
+ev_mod1 <- linearHypothesis(mod1,
+                            hypothesis.matrix = c("indice_pobreza = 0",
+                                                  "percepcion_corrupcion = 0",
+                                                  "edad = 0"))
+ev_mod1
+```
+*Al evaluar el modelo multivariado mediante los cuatro estadísticos principales (Traza de Pillai, Lambda de Wilks, Traza de Hotelling-Lawley y la Mayor Raíz de Roy), se obtuvo en todos los casos un valor p prácticamente nulo ($p < 2.22 \times 10^{-16}$), siendo inferior al nivel de significancia de 0.05. Por lo tanto, se rechaza la hipótesis nula ($H_0$). Se concluye que el modelo es globalmente significativo; es decir, el conjunto de variables independientes (índice de pobreza, percepción de corrupción y edad) influye de manera simultánea y significativa sobre las actitudes electorales evaluadas*
+
+## Pruebas por variable independiente
+
+Para saber **cuál o cuáles** de las tres variables independientes influyen sobre el conjunto de dependientes:
+
+```{r p4_pruebas-manova}
+summary(manova(mod1), test = "Pillai")
+summary(manova(mod1), test = "Wilks")
+summary(manova(mod1), test = "Hotelling-Lawley")
+summary(manova(mod1), test = "Roy")
+```
+
+*El análisis de varianza multivariado (MANOVA) individual revela que los tres predictores tienen un efecto altamente significativo sobre el conjunto de variables dependientes electorales ($p < 0.001$ en los cuatro criterios evaluados). Al observar los estadísticos de contraste, la percepción de corrupción se posiciona como la variable de mayor impacto global ($F = 29.56$, Traza de Pillai = $0.274$), seguida por el índice de pobreza ($F = 22.24$) y la edad ($F = 14.33$). Se rechazan las hipótesis nulas correspondientes, confirmando que cada uno de estos factores altera de manera independiente y comprobable el comportamiento y la percepción democrática del electorado.*
+
+
+```{r p4_pruebas-car}
+car::Anova(mod1)                       # Tipo II, Pillai por defecto
+car::Anova(mod1, type = "III")         # Tipo III
+car::Anova(mod1, test = "Wilks")
+car::Anova(mod1, type = "III", test = "Wilks")
+Manova(mod1)
+Manova(mod1, type = "III")
+```
+
+
+- Para ver el efecto sobre cada dependiente por separado:
+
+```{r p4_coeficientes}
+coef_tab <- round(coef(mod1), 3)
+kable(t(coef_tab), caption = "Coeficientes estimados (filas = Y, columnas = X)")
+```
+
+*"La estimación de los parámetros del modelo multivariado revela las dinámicas direccionales del electorado peruano. La percepción de corrupción actúa como el principal factor de desgaste institucional, reduciendo severamente la confianza en la democracia ($\beta = -0.604$) y la aprobación de las autoridades ($\beta = -0.573$), además de desincentivar la participación en las urnas ($\beta = -0.530$). Por su parte, el índice de pobreza impacta fuertemente en la calidad del debate político, reduciendo drásticamente la probabilidad de un voto ideológico ($\beta = -0.602$). En contraste, la edad presenta un efecto positivo generalizado, destacando como el principal motor del interés político ($\beta = 0.072$) y mostrando que los votantes de mayor edad mantienen una propensión ligeramente superior a ejercer su voto."*
+
+
+## Entrenamiento / prueba y predicciones
+
+El código original ajustaba el modelo con **toda** la data y luego predecía las primeras 20 filas, es decir, se evaluaba con datos ya usados para estimar. Aquí se corrige: se **separan 320 filas para entrenar (80%) y 80 para probar (20%)**.
+
+```{r p4_split}
+set.seed(123)
+idx_test <- sample(1:nrow(pregunta_4), size = 80)
+train <- pregunta_4[-idx_test, ]
+test  <- pregunta_4[ idx_test, ]
+
+# Modelo ajustado SOLO con entrenamiento
+mod_train <- lm(cbind(propension_votar, confianza_democracia, voto_ideologico,
+                      aprobacion_autoridades, interes_politico) ~
+                  indice_pobreza + percepcion_corrupcion + edad,
+                data = train)
+
+# Asegúrate de definir vars_x y vars_y si R te lo pide
+vars_x <- c("indice_pobreza", "percepcion_corrupcion", "edad")
+vars_y <- c("propension_votar", "confianza_democracia", "voto_ideologico", 
+            "aprobacion_autoridades", "interes_politico")
+
+predictions <- predict(mod_train, newdata = test[, vars_x])
+reales      <- test[, vars_y]
+
+comparacion <- cbind(predictions, reales)
+colnames(comparacion) <- c(paste0(vars_y, "_predicha"), paste0(vars_y, "_real"))
+
+library(knitr)
+kable(head(round(comparacion, 2), 10), caption = "Predicho vs. real (primeras 10 filas de prueba)")
+```
+
+*Esta tabla demuestra empíricamente el funcionamiento de la regresión, ya que el algoritmo logra acercarse significativamente a la realidad en la mayoría de los casos utilizando únicamente la edad, la pobreza y la percepción de corrupción de esas personas, manteniendo el margen de error esperado al tratar de predecir el comportamiento humano.*
+
+## Errores de predicción (MAPE y MAE)
+
+-   **MAPE**: error porcentual absoluto medio (válido aquí porque ninguna Y vale 0; la escala es 1 a 20).
+
+-   **MAE**: error absoluto medio, en las mismas unidades de la escala (más robusto si hubiera ceros).
+
+```{r p4_errores}
+mape <- function(y_pred, y_real) mean(abs(y_pred - y_real) / y_real) * 100
+mae  <- function(y_pred, y_real) mean(abs(y_pred - y_real))
+
+errores <- data.frame(
+  variable = vars_y,
+  MAPE = sapply(vars_y, function(v) mape(predictions[, v], reales[[v]])),
+  MAE      = sapply(vars_y, function(v) mae(predictions[, v], reales[[v]]))
+)
+kable(errores, digits = 2, row.names = FALSE,
+      caption = "Error de predicción en la muestra de prueba")
+```
+
+*El modelo demuestra su mayor fortaleza al predecir la propensión a votar (MAE = 1.72, MAPE = 22.84%). En contraste, variables como la aprobación de las autoridades o el voto ideológico presentan un error porcentual mayor (superior al 47%). Esto es estadísticamente coherente, ya que la aprobación presidencial y la ideología son actitudes altamente coyunturales y subjetivas, afectadas por noticias diarias, carisma político y escándalos mediáticos que trascienden a los determinantes sociodemográficos estructurales (edad y pobreza) ingresados en el modelo.*
+
+## R cuadrado por variable dependiente
+
+Mide qué proporción de la variabilidad de cada Y es explicada por pobreza, corrupción percibida y edad. Se calcula en el modelo con todos los datos y, como referencia, en la muestra de prueba.
+
+```{r p4_r2}
+res <- summary(mod1)
+r2_modelo <- sapply(paste("Response", vars_y), function(nm) res[[nm]]$r.squared)
+
+r2_test <- sapply(vars_y, function(v) cor(predictions[, v], reales[[v]])^2)
+
+r2_tab <- data.frame(variable = vars_y,
+                     R2_modelo_completo = as.numeric(r2_modelo),
+                     R2_prueba = as.numeric(r2_test))
+kable(r2_tab, digits = 3, row.names = FALSE, caption = "R cuadrado por variable dependiente")
+```
+
+*El análisis del coeficiente de determinación ($R^2$) revela que el modelo posee una capacidad explicativa coherente con los estándares de los estudios de comportamiento político. Las variables predictoras logran explicar hasta un 28.9% de la varianza en la propensión a votar durante la fase de entrenamiento, manteniendo un nivel predictivo aceptable del 21.5% en la muestra de prueba. En variables más subjetivas, como el interés político o la confianza en la democracia, la capacidad explicativa se reduce ($R^2$ de prueba = 0.056 y 0.063, respectivamente). Esta reducción es estadísticamente esperable, dado que dichas actitudes dependen en gran medida de factores coyunturales y mediáticos no contemplados en el modelo sociodemográfico base.*
+
+## Gráficos: valores predichos vs. reales
+
+Si la predicción fuera perfecta, todos los puntos caerían sobre la **línea diagonal punteada** (y = x). La línea roja es la tendencia observada: cuanto más cerca esté de la diagonal y menos dispersos estén los puntos, mejor predice el modelo.
+
+```{r p4_grafico-pred-real, fig.height=7}
+pred_long <- pivot_longer(
+  data.frame(predictions, id = seq_len(nrow(predictions))),
+  cols = -id, names_to = "variable", values_to = "predicho")
+real_long <- pivot_longer(
+  data.frame(reales, id = seq_len(nrow(reales))),
+  cols = -id, names_to = "variable", values_to = "real")
+graf <- merge(pred_long, real_long, by = c("id", "variable"))
+
+ggplot(graf, aes(x = real, y = predicho)) +
+  geom_jitter(width = 0.2, alpha = 0.55, color = "#2c3e50") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_smooth(method = "lm", se = TRUE, color = "#c0392b", fill = "#c0392b", alpha = 0.15) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(title = "Predicho vs. real (muestra de prueba, n = 80)",
+       x = "Valor real", y = "Valor predicho") +
+  theme_minimal(base_size = 12)
+```
+
+*La evaluación gráfica de valores predichos versus reales en la muestra de prueba ($n=80$) ilustra de forma clara el desempeño del modelo multivariado. En las cinco variables dependientes evaluadas, la línea de tendencia de predicción (roja) presenta una pendiente positiva constante, lo que certifica que el algoritmo captura correctamente la direccionalidad del comportamiento electoral. No obstante, la inclinación de esta tendencia respecto a la línea de identidad perfecta (punteada negra) evidencia un comportamiento de regresión a la media. El modelo es efectivo al estimar a los votantes promedio, pero es conservador al predecir actitudes políticas extremas, un comportamiento congruente con los niveles de varianza explicada ($R^2$) y típico en la modelación de fenómenos sociales complejos.*
+
+
+<br>
+
+# Pregunta 5 - Análisis de Componentes Principales (ACP)
+
+```{r p5_fig, include=FALSE}
+knitr::opts_chunk$set(fig.width = 8, fig.height = 6)
+```
+
+## Introducción
+
+El presente desarrollo aplica el Análisis de Componentes Principales (PCA) para reducir la dimensionalidad de un conjunto de datos deportivos. Para cumplir con la directiva de utilizar una base de datos distinta a la de clase, se seleccionó el dataset decathlon, el cual contiene el rendimiento de atletas en 10 disciplinas físicas continuas (100 metros, salto largo, lanzamiento de bala, salto alto, 400 metros, 110 metros con vallas, disco, salto con pértiga, jabalina y 1500 metros). El objetivo es identificar si estas 10 variables pueden resumirse en un número menor de componentes incorrelacionados que expliquen la mayor parte de la variabilidad del rendimiento físico, facilitando la interpretación de las habilidades subyacentes de los deportistas. 
+
+## Desarrollo del caso
+
+### Descripción de la base de datos
+
+La base de datos utilizada es `decathlon`, que contiene información de atletas en distintas pruebas deportivas. Para el análisis se seleccionaron las diez variables cuantitativas correspondientes a las disciplinas del decatlón.
+
+### Preparación de los datos y metodología
+
+```{r p5_preparacion, include=FALSE}
+library(FactoMineR)
+library(ade4)
+library(corrplot)
+
+data(decathlon, package = "FactoMineR")
+datosacp <- decathlon[, 1:10]
+```
+
+Se utilizaron las librerías FactoMineR, ade4 y corrplot. Primero se prepararon los datos y se seleccionaron las variables cuantitativas. Posteriormente, se calculó la matriz de correlaciones y se aplicó el Análisis de Componentes Principales con variables estandarizadas.
+
+### Análisis de correlación
+
+Se calculó la matriz de correlaciones entre las diez pruebas para identificar asociaciones positivas y negativas entre las variables.
+
+```{r p5_correlacion, message=FALSE, warning=FALSE, fig.cap="Figura 1. Matriz de correlaciones de las diez pruebas del decatlón."}
+matriz_cor <- cor(datosacp)
+
+corrplot( matriz_cor,method = "ellipse",type = "upper",order = "original",
+          addCoef.col = "black",tl.col = "black",tl.cex = 0.8,number.cex = 0.7)
+```
+
+### Aplicación del ACP y obtención de autovalores
+
+Se aplicó el ACP mediante la función dudi.pca del paquete ade4. Los autovalores permiten evaluar la varianza explicada por cada componente principal.
+
+```{r p5_acp, message=FALSE, warning=FALSE}
+acp <- dudi.pca(datosacp,scannf = FALSE,
+                scale = TRUE,nf = ncol(datosacp))
+cat("Autovalores:\n")
+print(acp$eig)
+```
+
+### Gráfico de sedimentación
+
+El gráfico de sedimentación permite visualizar los autovalores y evaluar cuántos componentes principales podrían conservarse mediante el criterio de Kaiser.
+
+```{r p5_sedimentacion, message=FALSE, warning=FALSE, fig.cap="Figura 2. Gráfico de sedimentación de los componentes principales."}
+plot(acp$eig,type = "b",pch = 20,col = "blue",lwd = 2,
+  main = "Autovalores - Componentes Principales",
+  xlab = "Componentes",
+  ylab = "Varianza")
+abline(h = 1, lty = 3, col = "red", lwd = 2)
+```
+
+### Círculo de correlaciones
+
+El círculo de correlaciones permite analizar la relación entre las variables originales y los componentes principales, facilitando la interpretación de las dimensiones obtenidas.
+
+```{r p5_circulo, message=FALSE, warning=FALSE, fig.cap="Figura 3. Círculo de correlaciones de las variables originales."}
+s.corcircle(acp$co,grid = FALSE,clabel = 0.8)
+```
+
+### Gráfico de individuos
+
+El gráfico de individuos representa a los atletas en el plano formado por los dos primeros componentes principales, permitiendo observar semejanzas, diferencias y patrones de rendimiento.
+
+```{r p5_individuos, message=FALSE, warning=FALSE, fig.cap="Figura 4. Distribución de los atletas en los dos primeros componentes principales."}
+s.label(acp$li,xax = 1,yax = 2,clabel = 0.7,grid = FALSE)
+```
+
+### Análisis complementario con FactoMineR
+
+Se utilizó la función PCA del paquete FactoMineR para obtener un resumen complementario del análisis y examinar la varianza explicada por los componentes.
+
+```{r p5_factominer, message=FALSE, warning=FALSE}
+respca <- PCA(datosacp,scale.unit = TRUE,ncp = 4,graph = FALSE)
+
+summary(respca)
+```
+
+## Resultados e interpretación
+
+### Análisis de correlación
+
+Al observar la matriz de correlaciones, se identifican relaciones entre las distintas disciplinas del decatlón. Por ejemplo, se reporta una correlación negativa de aproximadamente -0.60 entre la prueba de 100 metros y el salto largo (*Long.jump*). Esto sugiere que los atletas con menores tiempos en los 100 metros tienden a alcanzar mayores distancias en el salto largo. Esta relación puede asociarse con características compartidas del rendimiento, como la velocidad y la potencia explosiva.
+
+### Autovalores y varianza explicada
+
+El análisis reporta los siguientes autovalores para los cuatro primeros componentes principales: 3.272, 1.737, 1.405 y 1.057. De acuerdo con el criterio de Kaiser, que propone conservar los componentes cuyos autovalores son mayores que 1, se retendrían cuatro componentes principales.
+
+El primer componente (Dimensión 1) explica el 32.719 % de la varianza total, mientras que el segundo componente (Dimensión 2) explica el 17.371 %. En conjunto, los cuatro primeros componentes explican aproximadamente el 74.708 % de la variabilidad total de los datos. Esto indica que es posible resumir una parte importante de la información original utilizando un número menor de dimensiones.
+
+### Interpretación del círculo de correlaciones
+
+El círculo de correlaciones permite examinar la relación entre las variables originales y los dos primeros componentes principales.
+
+- **Componente 1 (Dimensión 1):** según la interpretación preliminar de los resultados, este componente representa un contraste entre las pruebas de velocidad y las pruebas relacionadas con los saltos y lanzamientos. Su interpretación definitiva debe considerar la dirección y la magnitud de las correlaciones observadas en el gráfico.
+
+- **Componente 2 (Dimensión 2):** este componente se relaciona con las variables que presentan mayores correlaciones con el segundo eje, entre ellas las pruebas de resistencia, como los 1500 metros. Su significado debe establecerse a partir de la posición y la dirección de las variables en el círculo de correlaciones.
+
+### Interpretación del gráfico de individuos
+
+El gráfico de individuos representa a los atletas en el plano formado por los dos primeros componentes principales. La proximidad entre los puntos puede indicar semejanzas en sus perfiles de rendimiento, mientras que una mayor separación puede reflejar diferencias en las combinaciones de características deportivas representadas por ambos componentes.
+
+Para identificar atletas con perfiles específicos, es necesario observar sus posiciones en el gráfico y relacionarlas con las variables que contribuyen a cada componente.
+
+## Discusión
+
+La reducción de dimensionalidad mediante el Análisis de Componentes Principales permite resumir las diez variables originales en cuatro componentes, que explican aproximadamente el 74.708 % de la variabilidad total, de acuerdo con los resultados reportados. Esta reducción facilita el estudio conjunto de las pruebas deportivas y permite identificar dimensiones que resumen distintos patrones de rendimiento.
+
+Los componentes principales son ortogonales entre sí, por lo que no presentan correlación lineal en el análisis. Sin embargo, esto no significa necesariamente que las aptitudes deportivas subyacentes sean completamente independientes. La interpretación de cada componente debe basarse en las correlaciones de las variables originales con los ejes obtenidos.
+
+En consecuencia, el ACP constituye una herramienta útil para explorar perfiles de rendimiento y reconocer semejanzas y diferencias entre atletas. No obstante, las interpretaciones específicas sobre cada deportista deben sustentarse en sus coordenadas y en la información mostrada por los gráficos.
+
+## Conclusiones
+
+- El Análisis de Componentes Principales permite reducir las diez variables deportivas originales a un conjunto menor de componentes que resumen una proporción importante de la variabilidad de los datos.
+
+- Según los autovalores reportados, los cuatro primeros componentes explican aproximadamente el 74.708 % de la variabilidad total. La retención de cuatro componentes debe verificarse con la salida definitiva del análisis en R.
+
+- El primer y el segundo componente permiten estudiar diferentes patrones de rendimiento deportivo. Su interpretación como dimensiones de velocidad, potencia, saltos, lanzamientos o resistencia debe sustentarse en las correlaciones observadas en el círculo de correlaciones.
+
+- El gráfico de individuos complementa el análisis al permitir visualizar semejanzas y diferencias entre los atletas según los dos primeros componentes principales.
+
+- En conclusión, el ACP facilita la exploración e interpretación de datos deportivos multidimensionales y ofrece una representación resumida del rendimiento de los atletas, conservando una proporción considerable de la información original.
