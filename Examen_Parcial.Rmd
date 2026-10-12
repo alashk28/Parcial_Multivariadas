@@ -981,6 +981,8 @@ ggplot(pregunta_3, aes(x = Biomasa_centeno_kg_ha_cov, y = Rendimiento_soya_kg_ha
   theme_minimal()
 ```
 
+El gráfico de dispersión muestra pendientes lineales con tendencias paralelas entre los cuatro tratamientos. No se observan cruces abruptos de pendientes\
+que sugieran comportamientos divergentes del fertilizante según la biomasa del cultivo previo.\
 ## Verificación de supuestos críticos
 
 ```{r}
@@ -995,7 +997,10 @@ paralelismo_test <- Anova(modelo_interaccion, type = "III", test = "Wilks")
 print(paralelismo_test)
 ```
 
-*Si el p-valor para el término Biomasa_centeno_kg_ha_cov:Tratamiento es mayor a 0.05, no se rechaza la hipótesis de paralelismo, garantizando la validez del modelo clásico de pendientes comunes.*
+Al contrastar la interacción multivariada en el modelo completo:\
+$$\Lambda_{\text{Wilks}} = 0.9804, \quad F(6, 174) \approx 0.288, \quad p = 0.942$$
+Dado que el valor $p \gg 0.05$, no se rechaza la hipótesis nula de homogeneidad de pendientes vectoriales. Las cuatro líneas de regresión multivariada son\
+estadísticamente paralelas.\
 
 
 ## Ajuste del modelo MANCOVA en DBCA
@@ -1012,6 +1017,8 @@ tabla_mancova <- Anova(mancova_soya, type = "III", test = "Wilks")
 print(tabla_mancova)
 ```
 
+El diseño en DBCA con ajuste por covariable fue exitoso: tanto el bloqueo ambiental como la covariable retiraron ruido experimental significativo, permitiendo\
+rechazar con alta certeza estadística la hipótesis nula de igualdad multivariada entre tratamientos.\
 ## Diagnósticos de residuos
 
 ```{r}
@@ -1020,6 +1027,8 @@ residuos_matriz <- residuals(mancova_soya)
 biotools::boxM(residuos_matriz, pregunta_3$Tratamiento)
 ```
 
+Compara si $\boldsymbol{\Sigma}_{\text{CT}} = \boldsymbol{\Sigma}_{\text{FM}} = \boldsymbol{\Sigma}_{\text{PL}} = \boldsymbol{\Sigma}_{\text{SN}}$.\
+Al no rechazar la hipótesis nula ($p > 0.05$), se corrobora que la dispersión y covarianza residual es equivalente en todos los grupos de fertilización.\
 ## Medias Ajustadas por la Covariable y Desglose Univariado
 
 ```{r}
@@ -1030,7 +1039,9 @@ summary(em_resp)
 # Comparaciones múltiples post-hoc (Tukey) dentro de cada respuesta
 pairs(em_resp, adjust = "tukey")
 ```
-
+El efecto multivariado significativo está impulsado de manera concordante por incrementos tanto en el rendimiento de grano como en la biomasa vegetativa de la soya. La\
+fertilización iniciadora (orgánica o mineral) confiere una ganancia productiva neta respecto a la siembra sin fertilizante, sin que la fuente específica de nitrógeno\
+genere discrepancias significativas entre ellas.\
 ## Conclusiones:
 
 - Efecto de la Covariable: La inclusión de la biomasa de centeno ajusta las diferencias basales entre parcelas, mejorando la precisión en la estimación de la respuesta de la soya.\
