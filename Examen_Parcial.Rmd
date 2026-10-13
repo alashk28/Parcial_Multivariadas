@@ -798,6 +798,93 @@ head(
 
 El centrado no modifica las diferencias entre observaciones ni el efecto ajustado del fertilizante. Permite evaluar el efecto del tratamiento considerando las condiciones iniciales de las unidades experimentales.
 
+###  Homogeneidad de las pendientes de regresión
+
+Además de evaluar la normalidad multivariada y la homogeneidad de las matrices de covarianzas, se realizó una comprobación complementaria de la homogeneidad de las pendientes de regresión. Este supuesto es importante en la MANCOVA porque permite verificar si la relación entre las covariables y las variables respuesta se mantiene similar en los distintos grupos de fertilizante.
+
+En este estudio se consideran dos covariables, Altura Inicial y Peso Inicial, dos variables respuesta, Altura Final y Peso Final, y tres grupos de fertilizante: A, B y C. Por ello, se evalúa si las pendientes asociadas a las covariables son iguales entre los grupos.
+
+**Planteamiento de las hipótesis**
+
+Sea \(\boldsymbol{\beta}_{1g}\) el vector de coeficientes de regresión asociado a Altura Inicial y \(\boldsymbol{\beta}_{2g}\) el vector de coeficientes asociado a Peso Inicial para el grupo de fertilizante \(g\). Cada vector contiene los coeficientes correspondientes a las dos variables respuesta.
+
+**Hipótesis nula (\(H_0\)):** Las pendientes de regresión asociadas a ambas covariables son iguales en los tres grupos de fertilizante.
+
+\[
+H_0:
+\boldsymbol{\beta}_{1A}
+=
+\boldsymbol{\beta}_{1B}
+=
+\boldsymbol{\beta}_{1C}
+\]
+
+\[
+\boldsymbol{\beta}_{2A}
+=
+\boldsymbol{\beta}_{2B}
+=
+\boldsymbol{\beta}_{2C}
+\]
+
+**Hipótesis alternativa (\(H_1\)):** Al menos una de las pendientes de regresión difiere entre los grupos de fertilizante.
+
+\[
+H_1:
+\exists\, j\in\{1,2\},\;g\neq h
+\text{ tal que }
+\boldsymbol{\beta}_{jg}
+\neq
+\boldsymbol{\beta}_{jh}
+\]
+
+**Nivel de significancia**
+
+Se establece un nivel de significancia de \(\alpha=0.05\).
+
+**Procedimiento en R**
+
+Para evaluar este supuesto, se comparan dos modelos multivariados. El primero no incluye interacciones entre las covariables y el fertilizante, mientras que el segundo incorpora dichas interacciones. Si las interacciones no son significativas, no se encuentra evidencia de que las pendientes difieran entre los grupos.
+
+```{r homogeneidad_pendientes}
+# Modelo sin interacciones
+Matrices <- summary(modelo_mancova_preg2)$SS
+modelo_sin_interacciones <- manova(
+  cbind(Altura_Final, Peso_Final) ~
+    Altura_Inicial_c + Peso_Inicial_c + Fertilizante,
+  data = datos_preg2
+)
+
+# Modelo con interacciones entre covariables y fertilizante
+modelo_con_interacciones <- manova(
+  cbind(Altura_Final, Peso_Final) ~
+    (Altura_Inicial_c + Peso_Inicial_c) * Fertilizante,
+  data = datos_preg2
+)
+
+# Comparación de modelos mediante la prueba de Pillai
+prueba_pendientes <- anova(
+  modelo_sin_interacciones,
+  modelo_con_interacciones,
+  test = "Pillai"
+)
+
+prueba_pendientes
+```
+
+**Regla de decisión**
+
+- Si el valor p es menor o igual que 0.05, se rechaza \(H_0\).
+- Si el valor p es mayor que 0.05, no se rechaza \(H_0\).
+
+**Interpretación de los resultados**
+
+La comparación de los modelos mediante la prueba multivariada de Pillai obtuvo un estadístico \(F=0.74967\) y un valor \(p=0.6476\).
+
+Como el valor p es mayor que el nivel de significancia de 0.05, no se rechaza la hipótesis nula. Por lo tanto, no se encontró evidencia estadísticamente significativa de que las pendientes de regresión difieran entre los grupos de fertilizante.
+
+En consecuencia, el supuesto de homogeneidad de las pendientes de regresión se considera razonablemente satisfecho. Esto permite continuar con la interpretación de la MANCOVA, teniendo en cuenta que la prueba no demuestra que las pendientes sean exactamente iguales, sino que no se detectaron diferencias estadísticamente significativas entre ellas.
+
 ## Análisis MANCOVA en DCA
 
 ### Hipótesis del efecto del fertilizante
