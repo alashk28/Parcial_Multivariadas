@@ -465,7 +465,7 @@ knitr::opts_chunk$set(fig.width = 8, fig.height = 5)
 
 ## Introducción
 
-El presente informe desarrolla un análisis de covarianza multivariado (MANCOVA) bajo un Diseño Completamente al Azar (DCA), con el propósito de evaluar el efecto de tres tratamientos correspondientes a diferentes tipos de fertilizante sobre un conjunto de variables respuesta. Las variables respuesta consideradas son la **altura final** y el **peso final**, mientras que la **altura inicial** y el **peso inicial** se incorporan como covariables.
+El presente informe desarrolla un análisis de covarianza multivariado (MANCOVA) bajo un Diseño Completamente al Azar (DCA), con el propósito de evaluar el efecto de tres tratamientos correspondientes a diferentes tipos de fertilizante sobre un conjunto de variables respuesta. Las variables respuesta consideradas son la **altura final** (en centímetros)  y el **peso final** (en gramos), mientras que la **altura inicial**(en centímetros) y el **peso inicial** (en gramos) se incorporan como covariables.
 
 La **unidad experimental** está constituida por cada planta a la que se asignó aleatoriamente uno de los tres tratamientos de fertilización. El factor de estudio es el **tipo de fertilizante**, con tres niveles: Fertilizante A, Fertilizante B y Fertilizante C. La incorporación de las covariables permite controlar estadísticamente la variabilidad asociada a las condiciones iniciales de las unidades experimentales y obtener una evaluación más precisa del efecto del tratamiento sobre las variables respuesta.
 
@@ -575,7 +575,7 @@ knitr::kable(
 )
 ```
 
-**Interpretación:** El fertilizante B presentó la mayor media de altura final (30.611) y peso final (12.765). Le siguió el fertilizante C, con medias de 29.728 y 11.328, respectivamente. El fertilizante A registró las menores medias: 27.452 en altura final y 10.217 en peso final. Estas diferencias son descriptivas y no demuestran por sí solas la existencia de diferencias estadísticamente significativas, pues deben evaluarse considerando las covariables iniciales.
+**Interpretación:** El fertilizante B presentó la mayor media de altura final (30.611 cm) y peso final (12.765 g). Le siguió el fertilizante C, con medias de 29.728 y 11.328, respectivamente. El fertilizante A registró las menores medias: 27.452 cm en altura final y 10.217 g en peso final. Estas diferencias son descriptivas y no demuestran por sí solas la existencia de diferencias estadísticamente significativas, pues deben evaluarse considerando las covariables iniciales.
 
 ### Gráfico de cajas de la altura final
 
